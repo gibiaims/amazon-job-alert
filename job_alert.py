@@ -1,131 +1,131 @@
-# job_alert.py
-# Amazon job checker -> Telegram notifier
-# Paste this file exactly as-is into your repository.
+# job_alert.py  (Playwright edition)
+# Uses Playwright to fetch the page (avoids 403), then parses job links and notifies Telegram.
 
 import os
 import json
+import time
 import requests
 from bs4 import BeautifulSoup
+from playwright.sync_api import sync_playwright
 
-# Config from GitHub Actions secrets
 SEARCH_URL = os.environ.get("SEARCH_URL")
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
 CACHE_FILE = "seen_jobs.json"
-REQUEST_TIMEOUT = 15
+REQUEST_TIMEOUT = 30
 
-def debug_print(*args):
+def debug(*args):
     print(*args, flush=True)
 
 def load_seen():
     try:
         with open(CACHE_FILE, "r") as f:
-            data = json.load(f)
-            return set(data)
+            return set(json.load(f))
     except Exception:
         return set()
 
-def save_seen(seen_set):
+def save_seen(s):
     try:
         with open(CACHE_FILE, "w") as f:
-            json.dump(list(seen_set), f)
+            json.dump(list(s), f)
     except Exception as e:
-        debug_print("Warning: could not save seen file:", e)
+        debug("Failed to save seen file:", e)
 
 def send_telegram(text):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        debug_print("Missing TELEGRAM_TOKEN or TELEGRAM_CHAT_ID; cannot send message.")
+        debug("Missing Telegram token/chat id.")
         return False
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     try:
-        resp = requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": text}, timeout=10)
-        try:
-            result = resp.json()
-        except Exception:
-            result = {"status_code": resp.status_code, "text": resp.text[:200]}
-        if resp.status_code != 200:
-            debug_print("Telegram API returned non-200:", resp.status_code, result)
-            return False
-        return True
+        r = requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": text}, timeout=10)
+        debug("Telegram status:", r.status_code)
+        return r.status_code == 200
     except Exception as e:
-        debug_print("Error sending Telegram message:", e)
+        debug("Telegram send error:", e)
         return False
 
-def fetch_jobs():
-    if not SEARCH_URL:
-        raise Exception("SEARCH_URL environment variable is missing or empty.")
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9",
-        "Accept-Language": "en-GB,en;q=0.9",
-        "Referer": "https://www.google.com/"
-    }
-    debug_print("Requesting:", SEARCH_URL)
-    r = requests.get(SEARCH_URL, headers=headers, timeout=REQUEST_TIMEOUT)
-    debug_print("HTTP STATUS:", r.status_code)
-    if r.status_code != 200:
-        raise Exception(f"HTTP request failed with status {r.status_code}")
-    soup = BeautifulSoup(r.text, "html.parser")
+def fetch_html_with_playwright(url):
+    debug("Starting Playwright to fetch:", url)
+    with sync_playwright() as p:
+        browser = p.chromium.launch(args=["--no-sandbox"])
+        page = browser.new_page()
+        # set viewport & user-agent just in case
+        page.set_viewport_size({"width": 1280, "height": 800})
+        page.set_extra_http_headers({"Accept-Language": "en-GB,en;q=0.9"})
+        try:
+            page.goto(url, wait_until="networkidle", timeout=REQUEST_TIMEOUT * 1000)
+            # optional: wait for a known element or small delay
+            time.sleep(1)
+            html = page.content()
+            return html
+        finally:
+            try:
+                browser.close()
+            except:
+                pass
 
+def parse_jobs_from_html(html):
+    soup = BeautifulSoup(html, "html.parser")
     jobs = []
-    # A few selectors to try — covers common Amazon job link patterns
+    seen_links = set()
     selectors = [
-        "a[href*='/job/']",    # common job link
+        "a[href*='/job/']",
         "a[href*='/jobs/']",
-        "div.job-tile a",      # site-specific card
+        "div.job-tile a",
         "li.job a"
     ]
-    seen_links = set()
     for sel in selectors:
         for a in soup.select(sel):
             title = a.get_text(strip=True)
             link = a.get("href")
             if not link or not title:
                 continue
-            # Normalize relative links
             if link.startswith("/"):
                 link = "https://www.amazon.jobs" + link
-            # Avoid duplicates from multiple selectors
             if link in seen_links:
                 continue
             seen_links.add(link)
-            # Derive job id from link (last path piece) if possible
             job_id = link.rstrip("/").split("/")[-1]
             jobs.append({"id": job_id, "title": title, "link": link})
     return jobs
 
 def main():
-    debug_print("SCRIPT STARTED")
-    debug_print("SEARCH_URL present:", bool(SEARCH_URL))
-    debug_print("TELEGRAM_TOKEN present:", bool(TELEGRAM_TOKEN))
-    debug_print("TELEGRAM_CHAT_ID present:", bool(TELEGRAM_CHAT_ID))
+    debug("SCRIPT STARTED")
+    debug("SEARCH_URL present:", bool(SEARCH_URL))
+    debug("TELEGRAM token present:", bool(TELEGRAM_TOKEN))
+    debug("TELEGRAM chat id present:", bool(TELEGRAM_CHAT_ID))
 
-    try:
-        seen = load_seen()
-        debug_print("Loaded seen jobs:", len(seen))
-        jobs = fetch_jobs()
-        debug_print("Jobs found on page:", len(jobs))
-    except Exception as e:
-        debug_print("Fatal error while fetching jobs:", e)
+    if not SEARCH_URL:
+        debug("ERROR: SEARCH_URL missing")
         return
 
-    new_jobs = [j for j in jobs if j["id"] not in seen]
-    debug_print("New jobs (not seen before):", len(new_jobs))
+    seen = load_seen()
+    debug("Seen jobs loaded:", len(seen))
 
-    if not new_jobs:
-        debug_print("No new jobs to notify.")
-    else:
-        for j in new_jobs[:10]:
+    try:
+        html = fetch_html_with_playwright(SEARCH_URL)
+    except Exception as e:
+        debug("Playwright fetch error:", e)
+        return
+
+    jobs = parse_jobs_from_html(html)
+    debug("Jobs parsed:", len(jobs))
+
+    new = [j for j in jobs if j["id"] not in seen]
+    debug("New jobs:", len(new))
+
+    if new:
+        for j in new[:10]:
             text = f"🚨 NEW AMAZON JOB\n\n{j['title']}\n{j['link']}"
             ok = send_telegram(text)
-            debug_print("Sent?", ok, "|", j["title"])
-        # Update seen set and save
-        seen.update(j["id"] for j in new_jobs)
+            debug("Sent?", ok, "|", j["title"])
+        seen.update(j["id"] for j in new)
         save_seen(seen)
-        debug_print("Updated seen jobs count:", len(seen))
+    else:
+        debug("No new jobs to notify.")
 
-    debug_print("SCRIPT FINISHED")
+    debug("SCRIPT FINISHED")
 
 if __name__ == "__main__":
     main()
