@@ -19,7 +19,14 @@ if not SEARCH_URL:
     raise Exception("SEARCH_URL secret missing")
 
 def fetch_jobs():
-    r = requests.get(SEARCH_URL, headers={"User-Agent": "Mozilla/5.0"})
+    headers = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml",
+    "Accept-Language": "en-GB,en;q=0.9",
+    "Referer": "https://www.google.com/"
+}
+
+r = requests.get(SEARCH_URL, headers=headers)
     print("HTTP STATUS:", r.status_code)
 
     soup = BeautifulSoup(r.text, "html.parser")
