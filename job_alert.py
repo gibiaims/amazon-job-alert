@@ -1,52 +1,59 @@
-import os, json, requests
+import os
+import json
+import requests
 from bs4 import BeautifulSoup
 
+print("SCRIPT STARTED")
+
 SEARCH_URL = os.environ.get("SEARCH_URL")
-TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
-TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
+
+print("SEARCH_URL:", SEARCH_URL)
+print("TOKEN PRESENT:", TELEGRAM_TOKEN is not None)
+print("CHAT ID:", TELEGRAM_CHAT_ID)
+
 CACHE_FILE = "seen_jobs.json"
 
+if not SEARCH_URL:
+    raise Exception("SEARCH_URL secret missing")
+
 def fetch_jobs():
-    r = requests.get(SEARCH_URL, headers={"User-Agent":"Mozilla/5.0"}, timeout=15)
-    r.raise_for_status()
+    r = requests.get(SEARCH_URL, headers={"User-Agent": "Mozilla/5.0"})
+    print("HTTP STATUS:", r.status_code)
+
     soup = BeautifulSoup(r.text, "html.parser")
     jobs = []
-    for a in soup.select("a[href*='/job/'], a[href*='/jobs/']"):
+
+    for a in soup.select("a[href*='/job/']"):
         title = a.get_text(strip=True)
         link = a.get("href")
-        if not link: continue
-        if link.startswith("/"): link = "https://www.amazon.jobs" + link
+
+        if link.startswith("/"):
+            link = "https://www.amazon.jobs" + link
+
         job_id = link.split("/")[-1]
-        jobs.append({"id": job_id, "title": title, "link": link})
+
+        jobs.append({
+            "id": job_id,
+            "title": title,
+            "link": link
+        })
+
+    print("JOBS FOUND:", len(jobs))
     return jobs
 
-def load_seen():
-    try:
-        with open(CACHE_FILE) as f:
-            return set(json.load(f))
-    except:
-        return set()
-
-def save_seen(s):
-    with open(CACHE_FILE, "w") as f:
-        json.dump(list(s), f)
-
-def send_telegram(text):
+def send_telegram(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": text}, timeout=10)
 
-def main():
-    if not SEARCH_URL:
-        print("SEARCH_URL missing")
-        return
-    seen = load_seen()
-    jobs = fetch_jobs()
-    new = [j for j in jobs if j["id"] not in seen]
-    for j in new[:10]:
-        send_telegram(f"🚨 NEW AMAZON JOB\n\n{j['title']}\n{j['link']}")
-    if new:
-        seen.update(j["id"] for j in new)
-        save_seen(seen)
+    requests.post(url, data={
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": message
+    })
 
-if __name__ == "__main__":
-    main()
+jobs = fetch_jobs()
+
+for job in jobs[:1]:
+    send_telegram(f"TEST JOB FOUND\n{job['title']}")
+
+print("SCRIPT FINISHED")
